@@ -21,7 +21,7 @@ jobs:
       run: pip install -r requirements.txt pytest pytest-mock
     - name: Run tests
       env:
-        GEMINI_API_KEY: "dummy-key-for-tests"  # Mock key for tests (app code handles missing key gracefully)
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY_CI }} # Mock key for tests (app code handles missing key gracefully)
       run: pytest tests/ -v  # Run with verbose output
 
   deploy:
