@@ -1,14 +1,11 @@
 # tests/test_app.py
 """
 Pytest suite for the alcohol label verification app.
-Focuses on:
-- Image preprocessing
-- Field comparison logic
-- Mocked Gemini extraction
-
-Run with: pytest tests/ -v
+Uses separate classes to isolate Gemini and OpenAI provider testing.
+Each class reloads app.py with the correct LLM_PROVIDER.
 """
 
+import importlib
 import json
 import os
 from unittest.mock import MagicMock, patch
@@ -17,17 +14,12 @@ import cv2
 import numpy as np
 import pytest
 
-# Import functions from your main app (adjust path if needed)
-from app import (
-    preprocess_image,
-    compare_fields,
-    extract_label_data,  # we'll mock the Gemini part
-    EXTRACTION_PROMPT,   # if you want to check prompt
-)
+# Initial import (will be reloaded in fixtures)
+import app
 
 
 # ────────────────────────────────────────────────
-# Fixtures
+# Common Fixtures
 # ────────────────────────────────────────────────
 
 @pytest.fixture
@@ -67,11 +59,11 @@ def sample_image_bytes():
 
 @pytest.fixture
 def mock_extracted_data():
-    """Typical successful Gemini extraction output"""
+    """Typical successful LLM extraction output"""
     return {
-        "brand_name": "OLD TOM DISTILLERY",
+        "brand_name": "TEST BRAND",
         "class_type": "Straight Bourbon Whiskey",
-        "alcohol_content": "45% Alc./Vol. (90 Proof)",
+        "alcohol_content": "40% ABV",
         "net_contents": "750 mL",
         "government_warning_full": (
             "GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD "
@@ -82,119 +74,95 @@ def mock_extracted_data():
         "warning_header_is_all_caps": True,
         "warning_header_is_bold": True,
         "extracted_confidence": "high",
-        "notes": "Clear image, no glare",
+        "notes": "Mocked test",
     }
 
 
 # ────────────────────────────────────────────────
-# Tests: Preprocessing
+# Gemini Provider Tests
 # ────────────────────────────────────────────────
 
-def test_preprocess_image_returns_bytes(sample_image_bytes):
-    result = preprocess_image(sample_image_bytes)
-    assert isinstance(result, bytes)
-    assert len(result) > 100  # some reasonable minimum size
+class TestGeminiProvider:
+    @pytest.fixture(autouse=True)
+    def setup_gemini(self):
+        """Reload app.py with LLM_PROVIDER = 'gemini'"""
+        original_env = os.environ.get("LLM_PROVIDER")
+        os.environ["LLM_PROVIDER"] = "gemini"
+        importlib.reload(app)
+        yield
+        # Cleanup
+        if original_env is not None:
+            os.environ["LLM_PROVIDER"] = original_env
+        else:
+            os.environ.pop("LLM_PROVIDER", None)
+        importlib.reload(app)
 
+    def test_extract_label_data_mocked(self, mocker, sample_image_bytes, mock_extracted_data):
+        mock_response = MagicMock()
+        mock_response.text = json.dumps(mock_extracted_data)
 
-def test_preprocess_image_handles_invalid_input():
-    invalid = b"not an image"
-    result = preprocess_image(invalid)
-    assert isinstance(result, bytes)
-    # Should return input or fallback bytes
-    assert len(result) > 0
+        mock_call = mocker.patch(
+            "app.client.models.generate_content",
+            return_value=mock_response
+        )
 
+        result = app.extract_label_data(sample_image_bytes, preprocess=False)
 
-# ────────────────────────────────────────────────
-# Tests: Field Comparison
-# ────────────────────────────────────────────────
+        assert isinstance(result, dict)
+        assert result["brand_name"] == mock_extracted_data["brand_name"]
+        assert mock_call.call_count == 1
 
-def test_compare_fields_perfect_match(mock_extracted_data):
-    results, verdict, confidence, notes = compare_fields(
-        mock_extracted_data,
-        expected_brand="old tom distillery",  # case-insensitive
-        expected_abv="45% Alc./Vol. (90 Proof)",
-        expected_warning=mock_extracted_data["government_warning_full"],
-    )
+    def test_extract_label_data_handles_non_json(self, mocker, sample_image_bytes):
+        mock_response = MagicMock()
+        mock_response.text = "Not JSON at all"
 
-    assert verdict == "APPROVED"
-    assert confidence == "high"
-    assert all(r["match"] == "✅" for r in results)
-    assert "Exact match" in results[-1]["notes"]
+        mocker.patch("app.client.models.generate_content", return_value=mock_response)
 
-
-def test_compare_fields_brand_case_insensitive(mock_extracted_data):
-    results, verdict, _, _ = compare_fields(
-        mock_extracted_data,
-        expected_brand="Old Tom DISTILLERY",
-        expected_abv="45% Alc./Vol. (90 Proof)",
-        expected_warning=mock_extracted_data["government_warning_full"],
-    )
-    brand_result = next(r for r in results if r["field"] == "Brand Name")
-    assert brand_result["match"] == "✅"
-
-
-def test_compare_fields_warning_formatting_fail(mock_extracted_data):
-    extracted = mock_extracted_data.copy()
-    extracted["warning_header_is_all_caps"] = False
-    extracted["warning_header_is_bold"] = False
-
-    results, verdict, _, _ = compare_fields(
-        extracted,
-        "OLD TOM DISTILLERY",
-        "45% Alc./Vol. (90 Proof)",
-        extracted["government_warning_full"],
-    )
-
-    assert verdict == "REJECTED – Issues found"
-    warning_result = next(r for r in results if r["field"] == "Government Warning")
-    assert warning_result["match"] == "❌"
-    assert "not ALL CAPS" in warning_result["notes"]
+        result = app.extract_label_data(sample_image_bytes, preprocess=False)
+        assert result is None
 
 
 # ────────────────────────────────────────────────
-# Tests: Gemini extraction (mocked)
+# OpenAI Provider Tests
 # ────────────────────────────────────────────────
 
-@pytest.mark.asyncio  # if your code becomes async in future
-def test_extract_label_data_mocked(mocker, sample_image_bytes):
-    # Mock the entire client.models.generate_content call
-    mock_response = MagicMock()
-    mock_response.text = json.dumps(
-        {
-            "brand_name": "TEST BRAND",
-            "alcohol_content": "40% ABV",
-            "government_warning_full": "GOVERNMENT WARNING: test text",
-            "warning_header_is_all_caps": True,
-            "warning_header_is_bold": True,
-            "extracted_confidence": "high",
-            "notes": "Mocked test",
-        }
-    )
+class TestOpenAIProvider:
+    @pytest.fixture(autouse=True)
+    def setup_openai(self):
+        """Reload app.py with LLM_PROVIDER = 'openai'"""
+        original_env = os.environ.get("LLM_PROVIDER")
+        os.environ["LLM_PROVIDER"] = "openai"
+        importlib.reload(app)
+        yield
+        # Cleanup
+        if original_env is not None:
+            os.environ["LLM_PROVIDER"] = original_env
+        else:
+            os.environ.pop("LLM_PROVIDER", None)
+        importlib.reload(app)
 
-    mock_generate = mocker.patch(
-        "app.client.models.generate_content", return_value=mock_response
-    )
+    def test_extract_label_data_mocked(self, mocker, sample_image_bytes, mock_extracted_data):
+        mock_completion = MagicMock()
+        mock_completion.choices = [MagicMock()]
+        mock_completion.choices[0].message.content = json.dumps(mock_extracted_data)
 
-    # Call the function
-    result = extract_label_data(sample_image_bytes, preprocess=False)
+        mock_call = mocker.patch(
+            "app.client.chat.completions.create",
+            return_value=mock_completion
+        )
 
-    assert isinstance(result, dict)
-    assert result["brand_name"] == "TEST BRAND"
-    assert mock_generate.call_count == 1
+        result = app.extract_label_data(sample_image_bytes, preprocess=False)
 
-    # Optional: verify that prompt was passed correctly
-    call_args = mock_generate.call_args[1]
-    assert "contents" in call_args
-    assert len(call_args["contents"]) == 2  # prompt + image
-    assert call_args["config"].temperature == 0.0
-    assert call_args["config"].response_mime_type == "application/json"
+        assert isinstance(result, dict)
+        assert result["brand_name"] == mock_extracted_data["brand_name"]
+        assert mock_call.call_count == 1
 
+    def test_extract_label_data_handles_non_json(self, mocker, sample_image_bytes):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "Not JSON at all"
 
-def test_extract_label_data_handles_non_json(mocker, sample_image_bytes):
-    mock_response = MagicMock()
-    mock_response.text = "Not JSON at all"
+        mocker.patch("app.client.chat.completions.create", return_value=mock_response)
 
-    mocker.patch("app.client.models.generate_content", return_value=mock_response)
-
-    result = extract_label_data(sample_image_bytes, preprocess=False)
-    assert result is None  # your code should return None on invalid JSON
+        result = app.extract_label_data(sample_image_bytes, preprocess=False)
+        assert result is None

@@ -5,6 +5,7 @@ import base64
 import io
 import json
 import os
+import sys
 import zipfile
 from datetime import datetime
 
@@ -23,6 +24,7 @@ from PIL import Image
 is_ci_or_test = (
         os.getenv("GITHUB_ACTIONS") == "true"  # GitHub Actions
         or os.getenv("PYTEST_CURRENT_TEST") is not None  # pytest
+        or "pytest" in sys.modules  # pytest
 )
 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # Default to openai (4-5 seconds with openai vs 10 seconds with gemini); set to "gemini" to swap
