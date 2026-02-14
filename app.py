@@ -62,7 +62,11 @@ If a letter is unclear, damaged, or partially visible due to glare/curve/reflect
 
 Each field within the image can span multiple lines. If the line that follows an incomplete field contains the text that would complete the expected field, include it in the same field.
 
-We are ONLY concerned with the brand name, alcohol content, and warning label. The warning label header "GOVERNMENT WARNING:" must be in all caps. The rest of the warning text is not case sensitive.
+The text from each field may not always appear on the same line, and may be split across multiple lines. Use your best judgment to determine if adjacent lines should be combined into the same field based on the expected values and the visual layout of the text.
+
+As one example, the text "45% Alc./Vol. (90 Proof)" may be split across two lines on the label, with "45% Alc./Vol." on one line and "(90 Proof)" on the next line. In this case, you should combine both lines into the single "alcohol_content" field in your output.
+
+We are ONLY concerned with the brand name, alcohol content, and warning label. The warning label header "GOVERNMENT WARNING:" must be in all caps, and be at least SLIGHTLY bolder than the rest of the warning text. If the header is not in all caps, or if it is not visually distinguishable as a header (e.g. bolded), this should be noted in the output.
 
 Match failures should be explained clearly, verbosely, in the 'Notes' field for the user.
 
