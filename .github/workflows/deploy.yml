@@ -1,0 +1,35 @@
+# Updated .github/workflows/deploy.yml - Now requires tests to pass before deploy job
+
+name: CI/CD for Streamlit App
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    - name: Install dependencies
+      run: pip install -r requirements.txt pytest pytest-mock
+    - name: Run tests
+      env:
+        GEMINI_API_KEY: "dummy-key-for-tests"  # Mock key for tests (app code handles missing key gracefully)
+      run: pytest tests/ -v  # Run with verbose output
+
+  deploy:
+    needs: test  # Only deploy if tests pass
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - name: Trigger Streamlit Deploy
+      run: echo "Streamlit Cloud auto-deploys on push to main. No manual trigger needed."
+      # If using Render.com, add: curl -X POST -dH "Authorization: Bearer ${{ secrets.RENDER_WEBHOOK_TOKEN }}" https://api.render.com/v1/services/<service-id>/deploys
