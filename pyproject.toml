@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "label-verifier"
+version = "0.1.0"
+dependencies = [
+    "streamlit",
+    "google-genai",
+    "opencv-python-headless",
+    "numpy",
+    "pandas",
+    "pillow",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

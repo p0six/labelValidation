@@ -25,6 +25,18 @@ if not GEMINI_API_KEY and not os.getenv("PYTEST_CURRENT_TEST"):
     st.error("Gemini API key not found. Please add GEMINI_API_KEY to Streamlit secrets or environment variables.")
     st.stop()
 
+# Conditional decorator: real cache in Streamlit, no-op during pytest
+if os.getenv("PYTEST_CURRENT_TEST") is None:
+    # Normal Streamlit run → use caching
+    cache_decorator = st.cache_data(
+        ttl=3600,
+        show_spinner="Analyzing label..."
+    )
+else:
+    # Running under pytest → skip caching entirely (no runtime warning)
+    def cache_decorator(func):
+        return func
+
 # Initialize client once
 client = genai.Client(api_key=GEMINI_API_KEY)
 
@@ -36,7 +48,7 @@ Your ONLY task is to extract text EXACTLY as it appears on the label — do NOT 
 
 If a letter is unclear, damaged, or partially visible due to glare/curve/reflection, transcribe it as best you can see it — even if it looks wrong. Do NOT assume the intended word.
 
-Each field can span multiple lines. If the line that follows an incomplete field looks like it could be a continuation, include it in the same field.
+Each field within the image can span multiple lines. If the line that follows an incomplete field contains the text that would complete the expected field, include it in the same field.
 
 We are ONLY concerned with the brand name, alcohol content, and warning label. The warning label header "GOVERNMENT WARNING:" must be in all caps. The rest of the warning text is not case sensitive.
 
@@ -61,7 +73,7 @@ Return ONLY valid JSON. No explanations, no corrections.
 # IMAGE PREPROCESSING (OpenCV)
 # ────────────────────────────────────────────────
 
-def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True) -> bytes:
+def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True, max_dim: int = 1024) -> bytes:
     """
     Enhanced preprocessing:
     - Decode image
@@ -73,6 +85,13 @@ def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
     if img is None:
         return image_bytes
+
+        # Resize to max dimension while preserving aspect ratio
+    h, w = img.shape[:2]
+    if max(h, w) > max_dim:
+        scale = max_dim / max(h, w)
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
     # Step 1: Grayscale & edge detection for contour finding
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -150,15 +169,14 @@ def _enhance_and_encode(img):
     enhanced = clahe.apply(gray)
     kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     sharpened = cv2.filter2D(enhanced, -1, kernel)
-    _, buffer = cv2.imencode('.jpg', sharpened, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    _, buffer = cv2.imencode('.jpg', sharpened, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
     return buffer.tobytes()
 
 
 # ────────────────────────────────────────────────
 # LABEL EXTRACTION (Gemini 1.5 Flash via new SDK)
 # ────────────────────────────────────────────────
-
-@st.cache_data(ttl=3600, show_spinner="Analyzing label...")
+# @cache_decorator - disabling caching - unnecessary for testing and causing an annoying warning with mock client. Can re-enable in production.
 def extract_label_data(image_bytes: bytes, preprocess: bool = True) -> dict | None:
     try:
         processed_bytes = preprocess_image(image_bytes) if preprocess else image_bytes
@@ -166,7 +184,7 @@ def extract_label_data(image_bytes: bytes, preprocess: bool = True) -> dict | No
         base64_image = base64.b64encode(processed_bytes).decode("utf-8")
 
         response = client.models.generate_content(
-            model="gemini-2.5-pro",
+            model="gemini-2.5-pro",  # or your preferred model
             contents=[
                 EXTRACTION_PROMPT,
                 {
@@ -193,7 +211,6 @@ def extract_label_data(image_bytes: bytes, preprocess: bool = True) -> dict | No
     except Exception as e:
         st.error(f"Error during Gemini extraction: {str(e)}")
         return None
-
 
 # ────────────────────────────────────────────────
 # FIELD COMPARISON LOGIC
