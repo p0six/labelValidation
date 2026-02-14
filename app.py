@@ -30,21 +30,29 @@ client = genai.Client(api_key=GEMINI_API_KEY)
 
 # The extraction prompt (same as before)
 EXTRACTION_PROMPT = """
-You are an expert TTB label compliance analyst with 20 years experience.
+You are an expert TTB label compliance analyst.
 
-Extract EXACTLY these fields from the alcohol label image. 
-Return ONLY valid JSON, no extra text.
+Your ONLY task is to extract text EXACTLY as it appears on the label — do NOT correct spelling, do NOT fix typos, do NOT guess missing letters, do NOT hallucinate words.
 
+If a letter is unclear, damaged, or partially visible due to glare/curve/reflection, transcribe it as best you can see it — even if it looks wrong. Do NOT assume the intended word.
+
+Each field can span multiple lines. If the line that follows an incomplete field looks like it could be a continuation, include it in the same field.
+
+We are ONLY concerned with the brand name, alcohol content, and warning label. The warning label header "GOVERNMENT WARNING:" must be in all caps. The rest of the warning text is not case sensitive.
+
+Match failures should be explained clearly, verbosely, in the 'Notes' field for the user.
+
+Return ONLY valid JSON. No explanations, no corrections.
 {
   "brand_name": "exact text of primary brand name, prefer largest/prominent text",
-  "class_type": "e.g. Kentucky Straight Bourbon Whiskey, Gin, etc.",
-  "alcohol_content": "exact alcohol statement, e.g. 45% Alc./Vol. (90 Proof)",
-  "net_contents": "e.g. 750 mL or 1 Liter",
-  "government_warning_full": "the complete government warning text exactly as it appears",
-  "warning_header_is_all_caps": true/false (is "GOVERNMENT WARNING:" literally in all capitals?),
-  "warning_header_is_bold": true/false (does it appear significantly bolder than surrounding text?),
+  "class_type": "exact class/type designation",
+  "alcohol_content": "exact alcohol content statement as written",
+  "net_contents": "exact net contents text",
+  "government_warning_full": "the COMPLETE government warning text EXACTLY as it appears — character for character, line by line, including any typos or formatting errors visible in the image",
+  "warning_header_is_all_caps": true/false,
+  "warning_header_is_bold": true/false,
   "extracted_confidence": "high/medium/low",
-  "notes": "any important observations (e.g. text is curved, glare present, creative placement)"
+  "notes": "only observations about image quality or reading difficulty — do NOT include any text corrections here"
 }
 """
 
@@ -53,28 +61,96 @@ Return ONLY valid JSON, no extra text.
 # IMAGE PREPROCESSING (OpenCV)
 # ────────────────────────────────────────────────
 
-def preprocess_image(image_bytes):
+def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True) -> bytes:
+    """
+    Enhanced preprocessing:
+    - Decode image
+    - Perspective correction (if quad detected)
+    - Approximate cylindrical dewarping (stretch compressed edges)
+    - Contrast enhancement + sharpening
+    """
     img_array = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
-
     if img is None:
-        return image_bytes  # fallback if decode fails
+        return image_bytes
 
-    # Auto-contrast (CLAHE on grayscale)
+    # Step 1: Grayscale & edge detection for contour finding
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-    enhanced = clahe.apply(gray)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edges = cv2.Canny(blurred, 50, 150)
 
-    # Sharpen
+    # Step 2: Find largest quadrilateral contour (hopefully label boundary)
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        # Fallback early
+        return _enhance_and_encode(gray)
+
+    largest_contour = max(contours, key=cv2.contourArea)
+    peri = cv2.arcLength(largest_contour, True)
+    approx = cv2.approxPolyDP(largest_contour, 0.02 * peri, True)
+
+    if len(approx) == 4:
+        # Perspective correction: warp to rectangle
+        pts = approx.reshape(4, 2).astype(np.float32)
+        # Sort points roughly: top-left, top-right, bottom-right, bottom-left
+        rect = np.zeros((4, 2), dtype="float32")
+        s = pts.sum(axis=1)
+        rect[0] = pts[np.argmin(s)]
+        rect[2] = pts[np.argmax(s)]
+        diff = np.diff(pts, axis=1)
+        rect[1] = pts[np.argmin(diff)]
+        rect[3] = pts[np.argmax(diff)]
+
+        (tl, tr, br, bl) = rect
+        width_a = np.sqrt(((br[0] - bl[0]) ** 2) + ((br[1] - bl[1]) ** 2))
+        width_b = np.sqrt(((tr[0] - tl[0]) ** 2) + ((tr[1] - tl[1]) ** 2))
+        max_width = max(int(width_a), int(width_b))
+
+        height_a = np.sqrt(((tr[0] - br[0]) ** 2) + ((tr[1] - br[1]) ** 2))
+        height_b = np.sqrt(((tl[0] - bl[0]) ** 2) + ((tl[1] - bl[1]) ** 2))
+        max_height = max(int(height_a), int(height_b))
+
+        dst_pts = np.array([
+            [0, 0],
+            [max_width - 1, 0],
+            [max_width - 1, max_height - 1],
+            [0, max_height - 1]
+        ], dtype="float32")
+
+        M = cv2.getPerspectiveTransform(rect, dst_pts)
+        warped = cv2.warpPerspective(img, M, (max_width, max_height))
+    else:
+        warped = img  # No good quad → skip perspective
+
+    # Step 3: Approximate cylindrical unwrap (simple horizontal stretch model)
+    if enable_cylindrical_unwrap and warped.shape[1] > 100:
+        h, w = warped.shape[:2]
+        map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+
+        # Assume cylinder axis is vertical → compress edges horizontally
+        # Simple model: stretch outer columns more (inverse of compression)
+        center_x = w / 2
+        radius_factor = 1.2  # tune: higher = more aggressive unwrap (1.1–1.5 typical)
+        offset = (map_x - center_x) * (radius_factor - 1) * (1 - np.abs(map_x - center_x) / (w / 2))
+
+        map_x_unwarped = (map_x + offset).astype(np.float32)
+        map_y_unwarped = map_y.astype(np.float32)
+
+        unwrapped = cv2.remap(warped, map_x_unwarped, map_y_unwarped, cv2.INTER_LINEAR)
+    else:
+        unwrapped = warped
+
+    # Step 4: Final enhancement
+    return _enhance_and_encode(unwrapped)
+
+
+def _enhance_and_encode(img):
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
+    enhanced = clahe.apply(gray)
     kernel = np.array([[-1, -1, -1], [-1, 9, -1], [-1, -1, -1]])
     sharpened = cv2.filter2D(enhanced, -1, kernel)
-
-    # Simple glare reduction
-    _, thresh = cv2.threshold(sharpened, 240, 255, cv2.THRESH_TOZERO_INV)
-
-    # Convert back to BGR for consistency
-    enhanced_color = cv2.cvtColor(sharpened, cv2.COLOR_GRAY2BGR)
-    _, buffer = cv2.imencode('.jpg', enhanced_color)
+    _, buffer = cv2.imencode('.jpg', sharpened, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
     return buffer.tobytes()
 
 
@@ -90,7 +166,7 @@ def extract_label_data(image_bytes: bytes, preprocess: bool = True) -> dict | No
         base64_image = base64.b64encode(processed_bytes).decode("utf-8")
 
         response = client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-2.5-pro",
             contents=[
                 EXTRACTION_PROMPT,
                 {
@@ -102,6 +178,7 @@ def extract_label_data(image_bytes: bytes, preprocess: bool = True) -> dict | No
             ],
             config=types.GenerateContentConfig(
                 temperature=0.0,
+                top_p=0.0,
                 response_mime_type="application/json"
             )
         )
