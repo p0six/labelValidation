@@ -19,11 +19,23 @@ from PIL import Image
 # CONFIG & SECRETS
 # ────────────────────────────────────────────────
 
-GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", os.getenv("GEMINI_API_KEY"))
+is_ci_or_test = (
+    os.getenv("GITHUB_ACTIONS") == "true"      # GitHub Actions
+    or os.getenv("PYTEST_CURRENT_TEST") is not None  # pytest
+)
 
-if not GEMINI_API_KEY and not os.getenv("PYTEST_CURRENT_TEST"):
-    st.error("Gemini API key not found. Please add GEMINI_API_KEY to Streamlit secrets or environment variables.")
-    st.stop()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+if not is_ci_or_test:
+    # Only enforce secrets.toml lookup in local/development Streamlit runs
+    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", GEMINI_API_KEY)
+    if not GEMINI_API_KEY:
+        st.error("Gemini API key not found. Please add GEMINI_API_KEY to Streamlit secrets or environment variables.")
+        st.stop()
+else:
+    # In CI / tests: use dummy or env var (your mocks never hit real API anyway)
+    if not GEMINI_API_KEY:
+        GEMINI_API_KEY = "dummy-key-for-ci-tests"
 
 # Conditional decorator: real cache in Streamlit, no-op during pytest
 if os.getenv("PYTEST_CURRENT_TEST") is None:
