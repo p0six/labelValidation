@@ -1,4 +1,4 @@
-# app.py - AI-Powered Alcohol Label Verification App (updated for google-genai SDK 2026)
+# app.py - AI-Powered Alcohol Label Verification App (updated for google-genai SDK 2026 + OpenAI support)
 
 import streamlit as st
 import base64
@@ -10,6 +10,7 @@ from datetime import datetime
 
 from google import genai
 from google.genai import types
+from openai import OpenAI
 import cv2
 import numpy as np
 import pandas as pd
@@ -20,22 +21,35 @@ from PIL import Image
 # ────────────────────────────────────────────────
 
 is_ci_or_test = (
-    os.getenv("GITHUB_ACTIONS") == "true"      # GitHub Actions
-    or os.getenv("PYTEST_CURRENT_TEST") is not None  # pytest
+        os.getenv("GITHUB_ACTIONS") == "true"  # GitHub Actions
+        or os.getenv("PYTEST_CURRENT_TEST") is not None  # pytest
 )
 
+LLM_PROVIDER = os.getenv("LLM_PROVIDER", "openai")  # Default to openai (4-5 seconds with openai vs 10 seconds with gemini); set to "gemini" to swap
+
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 if not is_ci_or_test:
     # Only enforce secrets.toml lookup in local/development Streamlit runs
-    GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", GEMINI_API_KEY)
-    if not GEMINI_API_KEY:
-        st.error("Gemini API key not found. Please add GEMINI_API_KEY to Streamlit secrets or environment variables.")
-        st.stop()
+    if LLM_PROVIDER == "gemini":
+        GEMINI_API_KEY = st.secrets.get("GEMINI_API_KEY", GEMINI_API_KEY)
+        if not GEMINI_API_KEY:
+            st.error(
+                "Gemini API key not found. Please add GEMINI_API_KEY to Streamlit secrets or environment variables.")
+            st.stop()
+    elif LLM_PROVIDER == "openai":
+        OPENAI_API_KEY = st.secrets.get("OPENAI_API_KEY", OPENAI_API_KEY)
+        if not OPENAI_API_KEY:
+            st.error(
+                "OpenAI API key not found. Please add OPENAI_API_KEY to Streamlit secrets or environment variables.")
+            st.stop()
 else:
     # In CI / tests: use dummy or env var (your mocks never hit real API anyway)
     if not GEMINI_API_KEY:
         GEMINI_API_KEY = "dummy-key-for-ci-tests"
+    if not OPENAI_API_KEY:
+        OPENAI_API_KEY = "dummy-key-for-ci-tests"
 
 # Conditional decorator: real cache in Streamlit, no-op during pytest
 if os.getenv("PYTEST_CURRENT_TEST") is None:
@@ -49,8 +63,11 @@ else:
     def cache_decorator(func):
         return func
 
-# Initialize client once
-client = genai.Client(api_key=GEMINI_API_KEY)
+# Initialize clients once
+if LLM_PROVIDER == "gemini":
+    client = genai.Client(api_key=GEMINI_API_KEY)
+elif LLM_PROVIDER == "openai":
+    client = OpenAI(api_key=OPENAI_API_KEY)
 
 # The extraction prompt (same as before)
 EXTRACTION_PROMPT = """
@@ -60,7 +77,7 @@ Your ONLY task is to extract text EXACTLY as it appears on the label — do NOT 
 
 If a letter is unclear, damaged, or partially visible due to glare/curve/reflection, transcribe it as best you can see it — even if it looks wrong. Do NOT assume the intended word.
 
-Each field within the image can span multiple lines. If the line that follows an incomplete field contains the text that would complete the expected field, include it in the same field.
+Each field within the image can span multiple lines. If the line that follows an incomplete field contains the text that would complete the expected field, include it in the same field. As one example, if the brand name is split across two lines, with "OLD TOM" on one line and "DISTILLERY" on the next line, you should combine both lines into the single "brand_name" field in your output.
 
 The text from each field may not always appear on the same line, and may be split across multiple lines. Use your best judgment to determine if adjacent lines should be combined into the same field based on the expected values and the visual layout of the text.
 
@@ -88,21 +105,18 @@ Return ONLY valid JSON. No explanations, no corrections.
 # ────────────────────────────────────────────────
 # IMAGE PREPROCESSING (OpenCV)
 # ────────────────────────────────────────────────
-
 def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True, max_dim: int = 1024) -> bytes:
-    """
-    Enhanced preprocessing:
+    """ Enhanced preprocessing:
     - Decode image
     - Perspective correction (if quad detected)
     - Approximate cylindrical dewarping (stretch compressed edges)
-    - Contrast enhancement + sharpening
-    """
+    - Contrast enhancement + sharpening """
     img_array = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
     if img is None:
         return image_bytes
 
-        # Resize to max dimension while preserving aspect ratio
+    # Resize to max dimension while preserving aspect ratio
     h, w = img.shape[:2]
     if max(h, w) > max_dim:
         scale = max_dim / max(h, w)
@@ -190,43 +204,66 @@ def _enhance_and_encode(img):
 
 
 # ────────────────────────────────────────────────
-# LABEL EXTRACTION (Gemini 1.5 Flash via new SDK)
+# LABEL EXTRACTION (LLM-agnostic)
 # ────────────────────────────────────────────────
-# @cache_decorator - disabling caching - unnecessary for testing and causing an annoying warning with mock client. Can re-enable in production.
+
+@cache_decorator
 def extract_label_data(image_bytes: bytes, preprocess: bool = True) -> dict | None:
     try:
         processed_bytes = preprocess_image(image_bytes) if preprocess else image_bytes
-
         base64_image = base64.b64encode(processed_bytes).decode("utf-8")
 
-        response = client.models.generate_content(
-            model="gemini-2.5-pro",  # or your preferred model
-            contents=[
-                EXTRACTION_PROMPT,
-                {
-                    "inline_data": {
-                        "mime_type": "image/jpeg",
-                        "data": base64_image
+        if LLM_PROVIDER == "gemini":
+            response = client.models.generate_content(
+                model="gemini-2.5-pro",
+                contents=[
+                    EXTRACTION_PROMPT,
+                    {
+                        "inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": base64_image
+                        }
                     }
-                }
-            ],
-            config=types.GenerateContentConfig(
-                temperature=0.0,
-                top_p=0.0,
-                response_mime_type="application/json"
+                ],
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    top_p=0.0,
+                    response_mime_type="application/json"
+                )
             )
-        )
+            text = response.text.strip()
+        elif LLM_PROVIDER == "openai":
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": EXTRACTION_PROMPT},
+                    {"role": "user", "content": [
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{base64_image}"
+                            }
+                        }
+                    ]}
+                ],
+                temperature=0.0,
+                response_format={"type": "json_object"}
+            )
+            text = response.choices[0].message.content.strip()
+        else:
+            st.error(f"Unknown LLM_PROVIDER: {LLM_PROVIDER}")
+            return None
 
-        text = response.text.strip()
         if not text.startswith("{"):
-            st.warning(f"Gemini did not return valid JSON. Raw response:\n{text[:200]}...")
+            st.warning(f"LLM did not return valid JSON. Raw response:\n{text[:200]}...")
             return None
 
         return json.loads(text)
 
     except Exception as e:
-        st.error(f"Error during Gemini extraction: {str(e)}")
+        st.error(f"Error during extraction: {str(e)}")
         return None
+
 
 # ────────────────────────────────────────────────
 # FIELD COMPARISON LOGIC
@@ -316,7 +353,7 @@ def process_single_image(image_bytes, filename, expected_brand, expected_abv, ex
 
 st.set_page_config(page_title="TTB Label Verifier", layout="wide")
 st.title("AI-Powered Alcohol Label Verification")
-st.caption("Prototype using Gemini 1.5 Flash – Fast label matching for TTB compliance")
+st.caption(f"Prototype using {LLM_PROVIDER.capitalize()} – Fast label matching for TTB compliance")
 
 tab_single, tab_batch = st.tabs(["Single Label", "Batch Processing"])
 

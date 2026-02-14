@@ -12,6 +12,7 @@ dependencies = [
     "numpy",
     "pandas",
     "pillow",
+    "openai",
 ]
 
 [tool.pytest.ini_options]

@@ -6,3 +6,4 @@ protobuf==4.25.8
 pytest==9.0.2
 streamlit==1.29.0
 google-genai==1.63.0
+openai==2.21.0
