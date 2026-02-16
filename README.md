@@ -22,7 +22,12 @@ The tool compares extracted values against user-provided expectations and presen
 - **Single-label verification**  
   Upload → real-time preview → enter expected values → AI analysis → verdict + detailed field-by-field comparison table
 - **Batch processing**  
-  Upload folder of images (or ZIP archive) + CSV of expected values → process all labels → downloadable results CSV
+  Upload folder of images (or ZIP archive) + CSV of expected values → process all labels → downloadable results CSV. 
+- - Example CSV:
+ ```aiignore
+"filename","expected_brand","expected_abv","expected_warning"
+"88d953a3-f886-43e7-87f0-c6f05971e845.jpg","OLD TOM DISTILLERY","45% Alc./Vol. (90 Proof)","GOVERNMENT WARNING: (1) ACCORDING TO THE SURGEON GENERAL, WOMEN SHOULD NOT DRINK ALCOHOLIC BEVERAGES DURING PREGNANCY BECAUSE OF THE RISK OF BIRTH DEFECTS. (2) CONSUMPTION OF ALCOHOLIC BEVERAGES IMPAIRS YOUR ABILITY TO DRIVE A CAR OR OPERATE MACHINERY, AND MAY CAUSE HEALTH PROBLEMS."
+```
 - **Image preprocessing**  
   OpenCV-based correction for glare, skew, contrast, and common label photography issues
 - **Typical latency**  
