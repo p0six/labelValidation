@@ -100,23 +100,32 @@ Return ONLY valid JSON. No explanations, no corrections.
 # ────────────────────────────────────────────────
 
 def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True, max_dim: int = 1024) -> bytes:
+    """ Enhanced preprocessing:
+    - Decode image
+    - Perspective correction (if quad detected)
+    - Approximate cylindrical dewarping (stretch compressed edges)
+    - Contrast enhancement + sharpening """
     img_array = np.frombuffer(image_bytes, np.uint8)
     img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
     if img is None:
         return image_bytes
 
+    # Resize to max dimension while preserving aspect ratio
     h, w = img.shape[:2]
     if max(h, w) > max_dim:
         scale = max_dim / max(h, w)
         new_w, new_h = int(w * scale), int(h * scale)
         img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
 
+    # Step 1: Grayscale & edge detection for contour finding
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edges = cv2.Canny(blurred, 50, 150)
 
+    # Step 2: Find largest quadrilateral contour (hopefully label boundary)
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
+        # Fallback early
         return _enhance_and_encode(gray)
 
     largest_contour = max(contours, key=cv2.contourArea)
@@ -154,11 +163,12 @@ def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True,
     else:
         warped = img
 
+    # Step 3: Approximate cylindrical unwrap (simple horizontal stretch model)
     if enable_cylindrical_unwrap and warped.shape[1] > 100:
         h, w = warped.shape[:2]
         map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
         center_x = w / 2
-        radius_factor = 1.2
+        radius_factor = 1.2 # tune: higher = more aggressive unwrap (1.1–1.5 typical)
         offset = (map_x - center_x) * (radius_factor - 1) * (1 - np.abs(map_x - center_x) / (w / 2))
         map_x_unwarped = (map_x + offset).astype(np.float32)
         map_y_unwarped = map_y.astype(np.float32)
@@ -166,6 +176,7 @@ def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True,
     else:
         unwrapped = warped
 
+    # Step 4: Final enhancement
     return _enhance_and_encode(unwrapped)
 
 def _enhance_and_encode(img):
@@ -317,14 +328,6 @@ def process_single_image(image_bytes, filename, expected_brand, expected_abv, ex
 # ────────────────────────────────────────────────
 # STREAMLIT UI
 # ────────────────────────────────────────────────
-
-import streamlit as st
-import pandas as pd
-from datetime import datetime
-import zipfile
-# Assuming these are defined elsewhere:
-# from your_module import process_single_image, LLM_PROVIDER
-
 st.set_page_config(page_title="TTB Label Verifier", layout="wide")
 
 # Reduce top padding / vacant space above the first content
@@ -341,7 +344,6 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
-
 
 st.title("AI-Powered Alcohol Label Verification")
 st.caption(f"Prototype using {LLM_PROVIDER.capitalize()} – Fast label matching for TTB compliance")
@@ -515,8 +517,12 @@ with tab_batch:
             with st.spinner("Processing batch..."):
                 try:
                     expected_df = pd.read_csv(csv_file)
+
+                    ## DEBUG
                     # st.write("CSV columns found:", list(expected_df.columns))
                     # st.write("First few rows:", expected_df.head().to_dict(orient="records"))
+                    ##/DEBUG
+
                     results = []
 
                     image_files = []
