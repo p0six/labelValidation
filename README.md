@@ -1,19 +1,21 @@
 # AI-Powered Alcohol Label Verification
 
-**Prototype for accelerating TTB compliance review**
-#### Author: Michael Romero
+**Prototype for accelerating Alcohol label review / approval**
 
 An interactive Streamlit application that leverages multimodal large language models to extract and verify critical information from alcohol beverage labels:
-- Brand name  
-- Alcohol by volume (ABV / proof)  
-- Government health warning statement  
+- Brand name
+- Alcohol by volume (ABV / proof)
+- Government health warning statement
 
 The tool compares extracted values against user-provided expectations and presents clear match/fail verdicts with confidence scores and explanatory notes.
 
+Automatically Deployed @ https://labelvalidation.streamlit.app/ with each commit to 'main' branch.
+
+#### Author: Michael Romero
+
 ## TODO:
-- Improve the UI, making uploaded images visible, perhaps annotating failures directly on the image.
+- Consider annotating failures directly on the image on the single image tab.
 - Create additional tests, especially for edge cases (e.g., very blurry images, unusual label designs).
-- Improve batch submission user experience
 - Investigate additional LLM's beyond Gemini and OpenAI, such as Claude or Llama 3, to compare performance and accuracy.
 - Validate build steps
 ---
