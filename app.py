@@ -133,7 +133,9 @@ def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True,
     approx = cv2.approxPolyDP(largest_contour, 0.02 * peri, True)
 
     if len(approx) == 4:
+        # Perspective correction: warp to rectangle
         pts = approx.reshape(4, 2).astype(np.float32)
+        # Sort points roughly: top-left, top-right, bottom-right, bottom-left
         rect = np.zeros((4, 2), dtype="float32")
         s = pts.sum(axis=1)
         rect[0] = pts[np.argmin(s)]
@@ -167,11 +169,16 @@ def preprocess_image(image_bytes: bytes, enable_cylindrical_unwrap: bool = True,
     if enable_cylindrical_unwrap and warped.shape[1] > 100:
         h, w = warped.shape[:2]
         map_x, map_y = np.meshgrid(np.arange(w), np.arange(h))
+
+        # Assume cylinder axis is vertical → compress edges horizontally
+        # Simple model: stretch outer columns more (inverse of compression)
         center_x = w / 2
-        radius_factor = 1.2 # tune: higher = more aggressive unwrap (1.1–1.5 typical)
+        radius_factor = 1.2  # tune: higher = more aggressive unwrap (1.1–1.5 typical)
         offset = (map_x - center_x) * (radius_factor - 1) * (1 - np.abs(map_x - center_x) / (w / 2))
+
         map_x_unwarped = (map_x + offset).astype(np.float32)
         map_y_unwarped = map_y.astype(np.float32)
+
         unwrapped = cv2.remap(warped, map_x_unwarped, map_y_unwarped, cv2.INTER_LINEAR)
     else:
         unwrapped = warped
@@ -187,6 +194,7 @@ def _enhance_and_encode(img):
     sharpened = cv2.filter2D(enhanced, -1, kernel)
     _, buffer = cv2.imencode('.jpg', sharpened, [int(cv2.IMWRITE_JPEG_QUALITY), 82])
     return buffer.tobytes()
+
 
 # ────────────────────────────────────────────────
 # LABEL EXTRACTION (LLM-agnostic)
