@@ -13,11 +13,11 @@ Automatically Deployed @ https://labelvalidation.streamlit.app/ with each commit
 
 #### Author: Michael Romero
 
-## TODO:
+## Tradeoffs / Limitations:
 - Consider annotating failures directly on the image on the single image tab.
 - Create additional tests, especially for edge cases (e.g., very blurry images, unusual label designs).
 - Investigate additional LLM's beyond Gemini and OpenAI, such as Claude or Llama 3, to compare performance and accuracy.
-- Validate build steps
+- Additional web hosts could be explored, though streamlit.app is very convenient for rapid prototyping and deployment.
 ---
 
 ## Core Features
